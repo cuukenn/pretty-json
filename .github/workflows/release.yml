@@ -3,9 +3,10 @@ name: Release
 # 自动打包并发布 GitHub Release：
 #  - 推送 v* 标签（如 v1.0.0）时，自动为 Windows / macOS / Linux 构建并打包
 #  - 所有产物直接挂载到 GitHub Release 资产中，可一键下载、双击安装/运行
-#  - Windows: .exe 便携版 + NSIS 安装器 (.exe)
-#  - macOS:   .dmg 磁盘镜像（双击挂载安装，不额外打 zip）
-#  - Linux:   .AppImage（双击直接运行）
+#  - 产物文件名统一带上版本号（tag 去掉 v，如 v1.0.0 -> 1.0.0）
+#  - Windows: pretty-json-<ver>-windows-amd64.exe（便携） + -setup.exe（NSIS 安装器）
+#  - macOS:   pretty-json-<ver>-macos.dmg（磁盘镜像，双击挂载安装，不打 zip）
+#  - Linux:   pretty-json-<ver>-linux-x86_64.AppImage（双击直接运行）
 on:
   push:
     tags:
@@ -30,21 +31,32 @@ jobs:
           - os: windows-latest
             build_args: "-nsis -webview2 download" # NSIS 安装包 + 下载 WebView2
             artifact: pretty-json-windows
-            upload_path: build/bin/*
+            upload_path: build/bin/*-windows-amd64*
           - os: macos-latest
             build_args: ""
             artifact: pretty-json-macos
-            upload_path: build/bin/pretty-json.dmg
+            upload_path: build/bin/*-macos.dmg
           - os: ubuntu-22.04
             build_args: ""
             artifact: pretty-json-linux
-            upload_path: build/bin/pretty-json-x86_64.AppImage
+            upload_path: build/bin/*-linux-x86_64.AppImage
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      # 提取版本号：tag 推送 -> v1.0.0 去掉 v 得 1.0.0；手动触发 -> dev-<commit短hash>
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" == "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -71,14 +83,22 @@ jobs:
       - name: Build Wails app
         run: wails build -o pretty-json ${{ matrix.build_args }}
 
-      # macOS：产出标准 .dmg 安装镜像（双击挂载，非 zip）
+      # Windows：重命名便携版与 NSIS 安装器，带上版本号
+      - name: Rename Windows artifacts
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mv build/bin/pretty-json.exe "build/bin/pretty-json-${VERSION}-windows-amd64.exe"
+          mv build/bin/pretty-json-*-installer.exe "build/bin/pretty-json-${VERSION}-windows-amd64-setup.exe"
+
+      # macOS：产出标准 .dmg 安装镜像（带版本号，非 zip）
       - name: Package macOS DMG
         if: runner.os == 'macOS'
         run: |
           chmod +x build/bin/pretty-json.app/Contents/MacOS/*
-          hdiutil create -volname "pretty-json" -srcfolder build/bin/pretty-json.app -ov -format UDZO build/bin/pretty-json.dmg
+          hdiutil create -volname "pretty-json" -srcfolder build/bin/pretty-json.app -ov -format UDZO "build/bin/pretty-json-${VERSION}-macos.dmg"
 
-      # Linux：打包为 AppImage（带 .AppImage 后缀，双击即可运行）
+      # Linux：打包为 AppImage（带版本号与 .AppImage 后缀，双击即可运行）
       - name: Package Linux AppImage
         if: runner.os == 'Linux'
         run: |
@@ -96,11 +116,13 @@ jobs:
           Terminal=false
           EOF
           cp build/bin/AppDir/pretty-json.desktop build/bin/AppDir/usr/share/applications/pretty-json.desktop
+          # 图标必须放在 AppDir 根目录（appimagetool 只在此查找），hicolor 目录保留一份
+          cp build/appicon.png build/bin/AppDir/pretty-json.png
           mkdir -p build/bin/AppDir/usr/share/icons/hicolor/256x256/apps
           cp build/appicon.png build/bin/AppDir/usr/share/icons/hicolor/256x256/apps/pretty-json.png
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
           chmod +x /tmp/appimagetool
-          ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run build/bin/AppDir build/bin/pretty-json-x86_64.AppImage
+          ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run build/bin/AppDir "build/bin/pretty-json-${VERSION}-linux-x86_64.AppImage"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
