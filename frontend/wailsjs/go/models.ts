@@ -66,6 +66,36 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class FileData {
+	    name: string;
+	    path: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FileData(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.content = source["content"];
+	    }
+	}
+	export class JSONPathResult {
+	    count: number;
+	    output: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new JSONPathResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.count = source["count"];
+	        this.output = source["output"];
+	    }
+	}
 
 }
 

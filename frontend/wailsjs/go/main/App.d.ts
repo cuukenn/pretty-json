@@ -6,6 +6,22 @@ export function AnalyzeJSON(arg1:string):Promise<main.AnalyzeResult>;
 
 export function FormatJSON(arg1:string):Promise<string>;
 
+export function GenerateCode(arg1:string,arg2:string):Promise<string>;
+
+export function JSONPathQuery(arg1:string,arg2:string):Promise<main.JSONPathResult>;
+
+export function JSONToTOML(arg1:string):Promise<string>;
+
+export function JSONToYAML(arg1:string):Promise<string>;
+
 export function MinifyJSON(arg1:string):Promise<string>;
 
+export function OpenJSONFile():Promise<main.FileData>;
+
+export function SaveTextFile(arg1:string,arg2:string):Promise<string>;
+
+export function TOMLToJSON(arg1:string):Promise<string>;
+
 export function ValidateJSON(arg1:string):Promise<boolean|string>;
+
+export function YAMLToJSON(arg1:string):Promise<string>;

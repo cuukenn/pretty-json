@@ -8,13 +8,19 @@ import { basicSetup } from 'codemirror';
 import { Compartment, EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { json } from '@codemirror/lang-json';
+import { yaml } from '@codemirror/lang-yaml';
+import { go } from '@codemirror/lang-go';
+import { java } from '@codemirror/lang-java';
+import { javascript } from '@codemirror/lang-javascript';
+import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language';
+import { toml as tomlMode } from '@codemirror/legacy-modes/mode/toml';
 import { lintGutter, linter, setDiagnostics } from '@codemirror/lint';
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
   readonly: { type: Boolean, default: false },
+  lang: { type: String, default: 'json' }, // json | yaml | toml | go | java | ts
 });
 const emit = defineEmits(['update:modelValue']);
 
@@ -71,13 +77,33 @@ const highlight = HighlightStyle.define([
 ]);
 
 const readonlyConf = new Compartment();
+const langConf = new Compartment();
+
+// StreamLanguage 实例复用，避免每次切换重复创建
+const tomlExt = StreamLanguage.define(tomlMode);
+function langExt(lang) {
+  switch (lang) {
+    case 'yaml':
+      return yaml();
+    case 'toml':
+      return tomlExt;
+    case 'go':
+      return go();
+    case 'java':
+      return java();
+    case 'ts':
+      return javascript();
+    default:
+      return json();
+  }
+}
 
 onMounted(() => {
   const state = EditorState.create({
     doc: props.modelValue || '',
     extensions: [
       basicSetup,
-      json(),
+      langConf.of(langExt(props.lang)),
       themeExt,
       syntaxHighlighting(highlight),
       EditorView.lineWrapping,
@@ -117,9 +143,18 @@ watch(
 watch(
   () => props.readonly,
   (ro) => {
+    // state 6.7+：运行时切换扩展须用 Compartment.reconfigure()（返回 StateEffect），
+    // Compartment.of() 只用于 extensions 数组
     view?.dispatch({
-      effects: readonlyConf.of(ro ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
+      effects: readonlyConf.reconfigure(ro ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
     });
+  }
+);
+
+watch(
+  () => props.lang,
+  (lang) => {
+    view?.dispatch({ effects: langConf.reconfigure(langExt(lang)) });
   }
 );
 

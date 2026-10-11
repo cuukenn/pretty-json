@@ -14,6 +14,11 @@
       </div>
       <div class="btn-divider"></div>
       <div class="btn-group">
+        <button @click="handleOpen" class="btn secondary" title="Ctrl+O">打开</button>
+        <button @click="handleSave" class="btn secondary" title="Ctrl+S">保存</button>
+      </div>
+      <div class="btn-divider"></div>
+      <div class="btn-group">
         <button @click="handleCopy" class="btn secondary">复制结果</button>
         <button @click="handleClear" class="btn danger">清空</button>
       </div>
@@ -25,14 +30,17 @@
       </button>
     </header>
 
+    <!-- M2 工具面板：格式互转 / JSONPath / 代码生成 -->
+    <ToolPanel :input="inputValue" @result="onToolResult" @error="(m) => toast(m, 'error')" />
+
     <!-- 输入输出区域（可拖拽分隔） -->
     <main class="content" ref="contentRef">
       <section class="panel" :style="{ width: leftPct + '%' }">
         <div class="panel-head">
-          <h3>输入 JSON</h3>
+          <h3>输入 {{ inputLangLabel }}</h3>
           <span class="hint">实时校验 · 错误行列定位</span>
         </div>
-        <JsonEditor ref="inputEditor" v-model="inputValue" />
+        <JsonEditor ref="inputEditor" v-model="inputValue" :lang="inputLang" />
       </section>
 
       <div class="splitter" @mousedown="startDrag" title="拖拽调整宽度">
@@ -41,10 +49,10 @@
 
       <section class="panel grow">
         <div class="panel-head">
-          <h3>处理结果</h3>
+          <h3>处理结果 <span class="lang-badge">{{ outputLangLabel }}</span></h3>
           <span class="hint">保留键顺序 · 大数字保精度</span>
         </div>
-        <JsonEditor v-model="outputValue" :readonly="true" />
+        <JsonEditor v-model="outputValue" :readonly="true" :lang="outputLang" />
       </section>
     </main>
 
@@ -57,8 +65,9 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import JsonEditor from './components/JsonEditor.vue';
+import ToolPanel from './components/ToolPanel.vue';
 import StatusBar from './components/StatusBar.vue';
 import ToastHost from './components/ToastHost.vue';
 
@@ -67,6 +76,15 @@ const inputValue = ref('');
 const outputValue = ref('');
 const analyzeResult = ref(null); // AnalyzeResult：{ valid, message, line, col, stats }
 const inputEditor = ref(null);
+
+// ---------- 编辑器语言（json | yaml | toml | go | java | ts） ----------
+const inputLang = ref('json');
+const outputLang = ref('json');
+const currentFileName = ref('');
+
+const langLabels = { json: 'JSON', yaml: 'YAML', toml: 'TOML', go: 'Go', java: 'Java', ts: 'TypeScript' };
+const inputLangLabel = computed(() => langLabels[inputLang.value] || 'JSON');
+const outputLangLabel = computed(() => langLabels[outputLang.value] || 'JSON');
 
 // ---------- 主题 ----------
 const theme = ref('light');
@@ -99,7 +117,7 @@ let analyzeSeq = 0;
 function refreshAnalyze(immediate = false) {
   if (analyzeTimer) clearTimeout(analyzeTimer);
   const run = async () => {
-    if (!inputValue.value.trim()) {
+    if (!inputValue.value.trim() || inputLang.value !== 'json') {
       analyzeResult.value = null;
       inputEditor.value?.clearError();
       return;
@@ -129,6 +147,7 @@ async function handleFormat() {
   }
   try {
     outputValue.value = await window.go.main.App.FormatJSON(inputValue.value);
+    outputLang.value = 'json';
     toast('格式化成功 ✅', 'success');
   } catch (err) {
     toast(err?.message || String(err), 'error');
@@ -142,6 +161,7 @@ async function handleMinify() {
   }
   try {
     outputValue.value = await window.go.main.App.MinifyJSON(inputValue.value);
+    outputLang.value = 'json';
     toast('压缩成功 ✅', 'success');
   } catch (err) {
     toast(err?.message || String(err), 'error');
@@ -179,8 +199,66 @@ function handleClear() {
   inputValue.value = '';
   outputValue.value = '';
   analyzeResult.value = null;
+  inputLang.value = 'json';
+  outputLang.value = 'json';
+  currentFileName.value = '';
   inputEditor.value?.clearError();
   toast('已清空', 'success');
+}
+
+// ---------- 文件打开 / 保存 / 拖放 ----------
+function extToLang(name) {
+  const m = /\.([a-z0-9]+)$/i.exec(name || '');
+  const ext = m?.[1]?.toLowerCase();
+  if (ext === 'yaml' || ext === 'yml') return 'yaml';
+  if (ext === 'toml') return 'toml';
+  return 'json';
+}
+
+function applyFile(fd) {
+  if (!fd) return;
+  inputValue.value = fd.content ?? '';
+  currentFileName.value = fd.name || '';
+  inputLang.value = extToLang(fd.name);
+  refreshAnalyze(true);
+  toast(`已打开 ${fd.name} ✅`, 'success');
+}
+
+async function handleOpen() {
+  try {
+    const fd = await window.go.main.App.OpenJSONFile();
+    if (!fd) return; // 用户取消
+    applyFile(fd);
+  } catch (err) {
+    toast(err?.message || String(err), 'error');
+  }
+}
+
+const saveExtMap = { json: 'json', yaml: 'yaml', toml: 'toml', go: 'go', ts: 'ts', java: 'java' };
+
+async function handleSave() {
+  const content = outputValue.value || inputValue.value;
+  if (!content.trim()) {
+    toast('无内容可保存', 'error');
+    return;
+  }
+  const base = currentFileName.value
+    ? currentFileName.value.replace(/\.[^.]+$/, '')
+    : 'pretty-json';
+  const defaultName = `${base || 'pretty-json'}.${saveExtMap[outputLang.value] || 'json'}`;
+  try {
+    const p = await window.go.main.App.SaveTextFile(content, defaultName);
+    if (p) toast(`已保存 ${p} ✅`, 'success');
+  } catch (err) {
+    toast(err?.message || String(err), 'error');
+  }
+}
+
+// ToolPanel 结果统一落到输出编辑器，并切换其高亮语言
+function onToolResult({ text, lang, note }) {
+  outputValue.value = text;
+  outputLang.value = lang || 'json';
+  if (note) toast(note, 'success');
 }
 
 // ---------- 分隔条拖拽 ----------
@@ -218,6 +296,12 @@ function onKeydown(e) {
   } else if (e.shiftKey && k === 'k') {
     e.preventDefault();
     handleValidate();
+  } else if (k === 'o') {
+    e.preventDefault();
+    handleOpen();
+  } else if (k === 's') {
+    e.preventDefault();
+    handleSave();
   }
 }
 
@@ -231,6 +315,11 @@ onMounted(() => {
     toast('就绪 ✅', 'success');
     refreshAnalyze(true);
   });
+  // 拖放文件：后端 OnFileDrop 推送 file:drop 事件
+  if (window.runtime?.EventsOn) {
+    window.runtime.EventsOn('file:drop', applyFile);
+    window.runtime.EventsOn('file:drop:error', (msg) => toast(msg, 'error'));
+  }
 });
 
 onBeforeUnmount(() => {
@@ -376,6 +465,20 @@ onBeforeUnmount(() => {
   font-size: 14px;
   color: var(--text);
   font-weight: 600;
+}
+
+.lang-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background-color: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+  user-select: none;
 }
 
 .panel-head .hint {

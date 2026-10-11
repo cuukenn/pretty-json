@@ -10,10 +10,42 @@ export function FormatJSON(arg1) {
   return window['go']['main']['App']['FormatJSON'](arg1);
 }
 
+export function GenerateCode(arg1, arg2) {
+  return window['go']['main']['App']['GenerateCode'](arg1, arg2);
+}
+
+export function JSONPathQuery(arg1, arg2) {
+  return window['go']['main']['App']['JSONPathQuery'](arg1, arg2);
+}
+
+export function JSONToTOML(arg1) {
+  return window['go']['main']['App']['JSONToTOML'](arg1);
+}
+
+export function JSONToYAML(arg1) {
+  return window['go']['main']['App']['JSONToYAML'](arg1);
+}
+
 export function MinifyJSON(arg1) {
   return window['go']['main']['App']['MinifyJSON'](arg1);
 }
 
+export function OpenJSONFile() {
+  return window['go']['main']['App']['OpenJSONFile']();
+}
+
+export function SaveTextFile(arg1, arg2) {
+  return window['go']['main']['App']['SaveTextFile'](arg1, arg2);
+}
+
+export function TOMLToJSON(arg1) {
+  return window['go']['main']['App']['TOMLToJSON'](arg1);
+}
+
 export function ValidateJSON(arg1) {
   return window['go']['main']['App']['ValidateJSON'](arg1);
+}
+
+export function YAMLToJSON(arg1) {
+  return window['go']['main']['App']['YAMLToJSON'](arg1);
 }
