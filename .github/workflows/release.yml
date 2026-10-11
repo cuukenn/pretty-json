@@ -84,19 +84,48 @@ jobs:
         run: wails build -o pretty-json ${{ matrix.build_args }}
 
       # Windows：重命名便携版与 NSIS 安装器，带上版本号
+      # 注意：wails 在指定 -o 名字时不会自动加 .exe（产物为 build/bin/pretty-json），
+      # 这里探测实际文件名后统一重命名。
       - name: Rename Windows artifacts
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          mv build/bin/pretty-json.exe "build/bin/pretty-json-${VERSION}-windows-amd64.exe"
-          mv build/bin/pretty-json-*-installer.exe "build/bin/pretty-json-${VERSION}-windows-amd64-setup.exe"
+          cd build/bin
+          echo "=== build/bin contents ==="
+          ls -la
+          # 便携可执行文件：兼容 pretty-json / pretty-json.exe / pretty-json-amd64.exe
+          PORTABLE=""
+          for f in pretty-json pretty-json.exe pretty-json-amd64.exe; do
+            if [ -f "$f" ]; then PORTABLE="$f"; break; fi
+          done
+          if [ -z "$PORTABLE" ]; then
+            echo "ERROR: portable executable not found in build/bin"
+            exit 1
+          fi
+          mv "$PORTABLE" "pretty-json-${VERSION}-windows-amd64.exe"
+          # NSIS 安装器：pretty-json-<arch>-installer.exe
+          for f in pretty-json-*-installer.exe; do
+            if [ -f "$f" ]; then
+              mv "$f" "pretty-json-${VERSION}-windows-amd64-setup.exe"
+            fi
+          done
+          echo "=== renamed ==="
+          ls -la
 
       # macOS：产出标准 .dmg 安装镜像（带版本号，非 zip）
       - name: Package macOS DMG
         if: runner.os == 'macOS'
         run: |
-          chmod +x build/bin/pretty-json.app/Contents/MacOS/*
-          hdiutil create -volname "pretty-json" -srcfolder build/bin/pretty-json.app -ov -format UDZO "build/bin/pretty-json-${VERSION}-macos.dmg"
+          cd build/bin
+          echo "=== build/bin contents ==="
+          ls -la
+          APP_DIR=$(ls -d *.app 2>/dev/null | head -1)
+          if [ -z "$APP_DIR" ]; then
+            echo "ERROR: no .app bundle found in build/bin"
+            exit 1
+          fi
+          chmod +x "$APP_DIR/Contents/MacOS/"*
+          hdiutil create -volname "pretty-json" -srcfolder "$APP_DIR" -ov -format UDZO "pretty-json-${VERSION}-macos.dmg"
 
       # Linux：打包为 AppImage（带版本号与 .AppImage 后缀，双击即可运行）
       - name: Package Linux AppImage
