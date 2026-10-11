@@ -2,7 +2,10 @@ name: Release
 
 # 自动打包并发布 GitHub Release：
 #  - 推送 v* 标签（如 v1.0.0）时，自动为 Windows / macOS / Linux 构建并打包
-#  - 打包产物自动上传到对应的 GitHub Release
+#  - 所有产物直接挂载到 GitHub Release 资产中，可一键下载、双击安装/运行
+#  - Windows: .exe 便携版 + NSIS 安装器 (.exe)
+#  - macOS:   .dmg 磁盘镜像（双击挂载安装，不额外打 zip）
+#  - Linux:   .AppImage（双击直接运行）
 on:
   push:
     tags:
@@ -25,17 +28,17 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            wails_args: "-nsis -webview2 download" # NSIS 安装包 + 下载 WebView2
+            build_args: "-nsis -webview2 download" # NSIS 安装包 + 下载 WebView2
             artifact: pretty-json-windows
             upload_path: build/bin/*
           - os: macos-latest
-            wails_args: ""
+            build_args: ""
             artifact: pretty-json-macos
-            upload_path: build/bin/pretty-json-macos.zip
+            upload_path: build/bin/pretty-json.dmg
           - os: ubuntu-22.04
-            wails_args: ""
+            build_args: ""
             artifact: pretty-json-linux
-            upload_path: build/bin/pretty-json
+            upload_path: build/bin/pretty-json-x86_64.AppImage
 
     steps:
       - name: Checkout
@@ -66,18 +69,38 @@ jobs:
           sudo apt-get install -y build-essential pkg-config libgtk-3-0 libwebkit2gtk-4.0-dev
 
       - name: Build Wails app
-        run: wails build -o pretty-json ${{ matrix.wails_args }}
+        run: wails build -o pretty-json ${{ matrix.build_args }}
 
-      # macOS：给可执行文件加执行权限，并把 .app 打包成 zip 方便发布
-      - name: Package macOS app bundle
+      # macOS：产出标准 .dmg 安装镜像（双击挂载，非 zip）
+      - name: Package macOS DMG
         if: runner.os == 'macOS'
         run: |
           chmod +x build/bin/pretty-json.app/Contents/MacOS/*
-          ditto -c -k --keepParent build/bin/pretty-json.app build/bin/pretty-json-macos.zip
+          hdiutil create -volname "pretty-json" -srcfolder build/bin/pretty-json.app -ov -format UDZO build/bin/pretty-json.dmg
 
-      - name: Make Linux binary executable
+      # Linux：打包为 AppImage（带 .AppImage 后缀，双击即可运行）
+      - name: Package Linux AppImage
         if: runner.os == 'Linux'
-        run: chmod +x build/bin/pretty-json
+        run: |
+          mkdir -p build/bin/AppDir/usr/bin
+          cp build/bin/pretty-json build/bin/AppDir/usr/bin/pretty-json
+          chmod +x build/bin/AppDir/usr/bin/pretty-json
+          mkdir -p build/bin/AppDir/usr/share/applications
+          cat > build/bin/AppDir/pretty-json.desktop <<'EOF'
+          [Desktop Entry]
+          Name=pretty-json
+          Exec=pretty-json
+          Icon=pretty-json
+          Type=Application
+          Categories=Utility;
+          Terminal=false
+          EOF
+          cp build/bin/AppDir/pretty-json.desktop build/bin/AppDir/usr/share/applications/pretty-json.desktop
+          mkdir -p build/bin/AppDir/usr/share/icons/hicolor/256x256/apps
+          cp build/appicon.png build/bin/AppDir/usr/share/icons/hicolor/256x256/apps/pretty-json.png
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
+          chmod +x /tmp/appimagetool
+          ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run build/bin/AppDir build/bin/pretty-json-x86_64.AppImage
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
