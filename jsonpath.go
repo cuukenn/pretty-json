@@ -295,7 +295,7 @@ func (a *App) JSONPathQuery(jsonStr, path string) (*JSONPathResult, error) {
 	if strings.TrimSpace(jsonStr) == "" {
 		return nil, fmt.Errorf("请输入JSON内容")
 	}
-	val, err := parseOrdered([]byte(jsonStr))
+	val, err := a.parseCached(jsonStr)
 	if err != nil {
 		return nil, fmt.Errorf("JSON格式错误: %v", err)
 	}

@@ -240,6 +240,21 @@ func pascal(s string) string {
 	return out
 }
 
+// pascalJava Java 访问器命名：每词首字母大写、不适用 Go 缩写词惯例（user_id → UserId，配合 getUserId）
+func pascalJava(s string) string {
+	parts := splitIdent(s)
+	var b strings.Builder
+	for _, p := range parts {
+		r := []rune(p)
+		r[0] = unicode.ToUpper(r[0])
+		b.WriteString(string(r))
+	}
+	if b.Len() == 0 {
+		return "F"
+	}
+	return b.String()
+}
+
 // camel 首词全小写、后续词首字母大写（user_id → userId）
 func camel(s string) string {
 	parts := splitIdent(s)
@@ -453,42 +468,99 @@ func renderTS(structs []*jtype, root *jtype) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func renderJava(structs []*jtype) string {
+// optBool 从 opts 读取布尔选项（Wails 将 JS 对象转为 map[string]any 传入）
+func optBool(opts map[string]any, key string) bool {
+	if opts == nil {
+		return false
+	}
+	b, _ := opts[key].(bool)
+	return b
+}
+
+func renderJava(structs []*jtype, lombok bool) string {
 	// 嵌套类：第一个为顶层类，其余作为其静态内部类
 	var b strings.Builder
-	b.WriteString("import java.util.List;\n\n")
+	b.WriteString("import com.fasterxml.jackson.annotation.JsonIgnoreProperties;\n")
+	b.WriteString("import com.fasterxml.jackson.annotation.JsonProperty;\n")
+	if javaUsesList(structs) {
+		b.WriteString("import java.util.List;\n")
+	}
+	if lombok {
+		b.WriteString("import lombok.Data;\n")
+	}
+	ann := "@JsonIgnoreProperties(ignoreUnknown = true)\n"
+	if lombok {
+		ann = "@Data\n" + ann // Lombok 生成 getter/setter/equals/hashCode/toString
+	}
+	annIn := strings.ReplaceAll(ann, "\n", "\n    ") // 内部类注解逐行加缩进
 	root := structs[0]
 	inner := structs[1:]
-	fmt.Fprintf(&b, "public class %s {\n", root.name)
-	writeJavaFields(&b, root, "    ")
-	if len(inner) > 0 {
-		b.WriteString("\n")
-		for _, s := range inner {
-			fmt.Fprintf(&b, "    public static class %s {\n", s.name)
-			writeJavaFields(&b, s, "        ")
-			b.WriteString("    }\n\n")
-		}
+	fmt.Fprintf(&b, "\n%spublic class %s {\n", ann, root.name)
+	writeJavaClassBody(&b, root, "    ", lombok)
+	for _, s := range inner {
+		fmt.Fprintf(&b, "\n    %spublic static class %s {\n", annIn, s.name)
+		writeJavaClassBody(&b, s, "        ", lombok)
+		b.WriteString("    }\n")
 	}
 	b.WriteString("}")
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func writeJavaFields(b *strings.Builder, s *jtype, indent string) {
-	for _, f := range s.fields {
-		fn := camel(f.key)
-		if javaKeywords[fn] {
-			fn = "_" + fn
+// javaUsesList 任一字段类型为 List 时才输出 java.util.List 的 import
+func javaUsesList(structs []*jtype) bool {
+	for _, s := range structs {
+		for _, f := range s.fields {
+			if strings.HasPrefix(javaType(f.typ), "List<") {
+				return true
+			}
 		}
-		fmt.Fprintf(b, "%spublic %s %s;\n", indent, javaType(f.typ), fn)
+	}
+	return false
+}
+
+// javaFieldName 驼峰字段名，Java 关键字加下划线前缀，数字开头加 f 前缀
+func javaFieldName(f *jfield) string {
+	fn := camel(f.key)
+	switch {
+	case javaKeywords[fn]:
+		fn = "_" + fn
+	case unicode.IsDigit([]rune(fn)[0]):
+		fn = "f" + fn
+	}
+	return fn
+}
+
+// writeJavaClassBody 先输出字段（private + @JsonProperty 保留原始键名），再输出 getter/setter；lombok 模式跳过访问器
+func writeJavaClassBody(b *strings.Builder, s *jtype, indent string, lombok bool) {
+	names := make([]string, 0, len(s.fields))
+	for _, f := range s.fields {
+		fn := javaFieldName(f)
+		names = append(names, fn)
+		fmt.Fprintf(b, "\n%s@JsonProperty(%q)\n%sprivate %s %s;\n", indent, f.key, indent, javaType(f.typ), fn)
+	}
+	if lombok {
+		return
+	}
+	for i, f := range s.fields {
+		fn := names[i]
+		pn := pascalJava(f.key)
+		typ := javaType(f.typ)
+		get := "get" + pn
+		if typ == "boolean" { // JavaBeans 惯例：基本类型 boolean 用 is 前缀
+			get = "is" + pn
+		}
+		fmt.Fprintf(b, "\n%spublic %s %s() {\n%s\treturn %s;\n%s}\n", indent, typ, get, indent, fn, indent)
+		fmt.Fprintf(b, "\n%spublic void set%s(%s %s) {\n%s\tthis.%s = %s;\n%s}\n", indent, pn, typ, fn, indent, fn, fn, indent)
 	}
 }
 
-// GenerateCode 根据 JSON 样例生成类型定义代码；lang 支持 go / typescript(ts) / java
-func (a *App) GenerateCode(jsonStr, lang string) (string, error) {
+// GenerateCode 根据 JSON 样例生成类型定义代码；lang 支持 go / typescript(ts) / java；
+// opts 目前支持 javaLombok=true：Java 用 Lombok @Data 替代显式 getter/setter
+func (a *App) GenerateCode(jsonStr, lang string, opts map[string]any) (string, error) {
 	if strings.TrimSpace(jsonStr) == "" {
 		return "", fmt.Errorf("请输入JSON内容")
 	}
-	val, err := parseOrdered([]byte(jsonStr))
+	val, err := a.parseCached(jsonStr)
 	if err != nil {
 		return "", fmt.Errorf("JSON格式错误: %v", err)
 	}
@@ -508,7 +580,7 @@ func (a *App) GenerateCode(jsonStr, lang string) (string, error) {
 		if root.kind != "object" {
 			return "", fmt.Errorf("Java 代码生成要求顶层为 JSON 对象")
 		}
-		return renderJava(structs), nil
+		return renderJava(structs, optBool(opts, "javaLombok")), nil
 	default:
 		return "", fmt.Errorf("不支持的语言: %s（支持 go / typescript / java）", lang)
 	}

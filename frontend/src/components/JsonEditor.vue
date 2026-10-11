@@ -32,7 +32,7 @@ let silent = false;
 const themeExt = EditorView.theme({
   '&': { height: '100%', fontSize: '13px', backgroundColor: 'var(--panel)', color: 'var(--text)' },
   '.cm-scroller': {
-    fontFamily: "'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace",
+    fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, 'Courier New', monospace",
     lineHeight: '1.6',
   },
   '.cm-content': { caretColor: 'var(--accent)', padding: '8px 0' },
@@ -78,6 +78,17 @@ const highlight = HighlightStyle.define([
 
 const readonlyConf = new Compartment();
 const langConf = new Compartment();
+const wrapConf = new Compartment();
+
+// 大文档关闭自动换行，避免超长行的排版开销（仅视觉换行，不影响内容）
+const WRAP_LIMIT = 300000;
+let wrapOn = true;
+function applyWrap(docLen) {
+  const want = docLen <= WRAP_LIMIT;
+  if (want === wrapOn || !view) return;
+  wrapOn = want;
+  view.dispatch({ effects: wrapConf.reconfigure(want ? EditorView.lineWrapping : []) });
+}
 
 // StreamLanguage 实例复用，避免每次切换重复创建
 const tomlExt = StreamLanguage.define(tomlMode);
@@ -106,7 +117,7 @@ onMounted(() => {
       langConf.of(langExt(props.lang)),
       themeExt,
       syntaxHighlighting(highlight),
-      EditorView.lineWrapping,
+      wrapConf.of(EditorView.lineWrapping),
       lintGutter(),
       // 编辑时自动清空旧标记；真正的诊断由后端分析后经 setDiagnostics 注入
       linter(() => [], { delay: 0 }),
@@ -120,6 +131,7 @@ onMounted(() => {
     ],
   });
   view = new EditorView({ state, parent: host.value });
+  applyWrap((props.modelValue || '').length);
 });
 
 onBeforeUnmount(() => {
@@ -135,8 +147,20 @@ watch(
     const next = v ?? '';
     if (v === cur) return;
     silent = true;
-    view.dispatch({ changes: { from: 0, to: cur.length, insert: next } });
+    // 增量替换：裁剪公共前后缀，只对差异区域派发变更。
+    // 追写/局部编辑时避免整篇替换导致的全量重排与选区丢失。
+    let start = 0;
+    const minLen = Math.min(cur.length, next.length);
+    while (start < minLen && cur.charCodeAt(start) === next.charCodeAt(start)) start++;
+    let endCur = cur.length;
+    let endNext = next.length;
+    while (endCur > start && endNext > start && cur.charCodeAt(endCur - 1) === next.charCodeAt(endNext - 1)) {
+      endCur--;
+      endNext--;
+    }
+    view.dispatch({ changes: { from: start, to: endCur, insert: next.slice(start, endNext) } });
     silent = false;
+    applyWrap(next.length);
   }
 );
 
@@ -196,5 +220,6 @@ defineExpose({
   border-radius: 8px;
   overflow: hidden;
   background-color: var(--panel);
+  box-shadow: var(--shadow);
 }
 </style>

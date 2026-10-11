@@ -6,12 +6,16 @@ export function AnalyzeJSON(arg1) {
   return window['go']['main']['App']['AnalyzeJSON'](arg1);
 }
 
+export function BuildJSONTree(arg1) {
+  return window['go']['main']['App']['BuildJSONTree'](arg1);
+}
+
 export function FormatJSON(arg1) {
   return window['go']['main']['App']['FormatJSON'](arg1);
 }
 
-export function GenerateCode(arg1, arg2) {
-  return window['go']['main']['App']['GenerateCode'](arg1, arg2);
+export function GenerateCode(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GenerateCode'](arg1, arg2, arg3);
 }
 
 export function JSONPathQuery(arg1, arg2) {

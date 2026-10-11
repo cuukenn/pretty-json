@@ -22,29 +22,11 @@ type Obj struct {
 
 // MarshalJSON 输出紧凑 JSON；外层 Encoder 的 SetIndent 会负责缩进美化
 func (o *Obj) MarshalJSON() ([]byte, error) {
-	var b bytes.Buffer
-	b.WriteByte('{')
-	for i, m := range o.Members {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		k, err := marshalNoEscape(m.Key)
-		if err != nil {
-			return nil, err
-		}
-		b.Write(k)
-		b.WriteByte(':')
-		v, err := marshalNoEscape(m.Value)
-		if err != nil {
-			return nil, err
-		}
-		b.Write(v)
-	}
-	b.WriteByte('}')
-	return b.Bytes(), nil
+	return appendObject(nil, o, "", 0)
 }
 
-// marshalNoEscape 序列化单个值，且关闭 HTML 转义（保留 < > & 原样输出）
+// marshalNoEscape 序列化单个值，且关闭 HTML 转义（保留 < > & 原样输出）。
+// 仅作为未知类型的兜底路径；常规序列化一律走 appendValue 单遍直写。
 func marshalNoEscape(v any) ([]byte, error) {
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
@@ -67,6 +49,34 @@ func parseOrdered(data []byte) (any, error) {
 	if dec.More() {
 		return nil, fmt.Errorf("JSON 文档结束后存在多余内容")
 	}
+	return val, nil
+}
+
+// parseCacheMinSize 小于该长度的文档不做缓存：解析开销小，
+// 且避免为小输入长期驻留一份大字符串键。
+const parseCacheMinSize = 20000
+
+// parseCached 单条目解析缓存：输入内容与上次完全一致时直接复用解析树，
+// 使 校验/格式化/压缩/互转/JSONPath/代码生成 在同一文档上只解析一次。
+func (a *App) parseCached(jsonStr string) (any, error) {
+	if len(jsonStr) < parseCacheMinSize {
+		return parseOrdered([]byte(jsonStr))
+	}
+	a.parseCacheMu.Lock()
+	defer a.parseCacheMu.Unlock()
+	if a.parseCacheOK && a.parseCacheKey == jsonStr {
+		return a.parseCacheVal, nil
+	}
+	val, err := parseOrdered([]byte(jsonStr))
+	if err != nil {
+		a.parseCacheOK = false
+		a.parseCacheKey = ""
+		a.parseCacheVal = nil
+		return nil, err
+	}
+	a.parseCacheOK = true
+	a.parseCacheKey = jsonStr
+	a.parseCacheVal = val
 	return val, nil
 }
 
@@ -121,18 +131,152 @@ func decodeValue(dec *json.Decoder) (any, error) {
 	}
 }
 
-// encodeValue 序列化解析结果；indent 非空时进行缩进美化
+// encodeValue 序列化解析结果；indent 非空时进行缩进美化。
+// 单遍直写：不经过 encoding/json 的 Marshaler 协议，无每值中间分配，
+// 保留键顺序与数字精度，转义行为与 SetEscapeHTML(false) 一致。
 func encodeValue(v any, indent string) (string, error) {
-	var b bytes.Buffer
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	if indent != "" {
-		enc.SetIndent("", indent)
-	}
-	if err := enc.Encode(v); err != nil {
+	dst, err := appendValue(make([]byte, 0, 1024), v, indent, 0)
+	if err != nil {
 		return "", err
 	}
-	return strings.TrimRight(b.String(), "\n"), nil
+	return string(dst), nil
+}
+
+// appendValue 将 v 序列化追加到 dst。支持 *Obj / []any / string /
+// json.Number / bool / nil；其余类型经 marshalNoEscape 防御性兜底。
+func appendValue(dst []byte, v any, indent string, depth int) ([]byte, error) {
+	switch t := v.(type) {
+	case *Obj:
+		return appendObject(dst, t, indent, depth)
+	case []any:
+		return appendArray(dst, t, indent, depth)
+	case string:
+		return appendJSONString(dst, t), nil
+	case json.Number:
+		return append(dst, t...), nil
+	case bool:
+		if t {
+			return append(dst, "true"...), nil
+		}
+		return append(dst, "false"...), nil
+	case nil:
+		return append(dst, "null"...), nil
+	default:
+		b, err := marshalNoEscape(v)
+		if err != nil {
+			return nil, err
+		}
+		return append(dst, b...), nil
+	}
+}
+
+func appendObject(dst []byte, o *Obj, indent string, depth int) ([]byte, error) {
+	if len(o.Members) == 0 {
+		return append(dst, '{', '}'), nil
+	}
+	dst = append(dst, '{')
+	for i, m := range o.Members {
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		dst = writeIndent(dst, indent, depth+1)
+		dst = appendJSONString(dst, m.Key)
+		dst = append(dst, ':')
+		if indent != "" {
+			dst = append(dst, ' ')
+		}
+		var err error
+		dst, err = appendValue(dst, m.Value, indent, depth+1)
+		if err != nil {
+			return nil, err
+		}
+	}
+	dst = writeIndent(dst, indent, depth)
+	return append(dst, '}'), nil
+}
+
+func appendArray(dst []byte, arr []any, indent string, depth int) ([]byte, error) {
+	if len(arr) == 0 {
+		return append(dst, '[', ']'), nil
+	}
+	dst = append(dst, '[')
+	for i, e := range arr {
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		dst = writeIndent(dst, indent, depth+1)
+		var err error
+		dst, err = appendValue(dst, e, indent, depth+1)
+		if err != nil {
+			return nil, err
+		}
+	}
+	dst = writeIndent(dst, indent, depth)
+	return append(dst, ']'), nil
+}
+
+// writeIndent 美化模式下追加换行与 depth 层缩进；紧凑模式下为空操作
+func writeIndent(dst []byte, indent string, depth int) []byte {
+	if indent == "" {
+		return dst
+	}
+	dst = append(dst, '\n')
+	for i := 0; i < depth; i++ {
+		dst = append(dst, indent...)
+	}
+	return dst
+}
+
+const hexDigits = "0123456789abcdef"
+
+// appendJSONString 将 s 作为 JSON 字符串追加到 dst。行为与 encoding/json
+// 在 SetEscapeHTML(false) 下一致：< > & 原样保留，U+2028/U+2029 转义，
+// 非法 UTF-8 字节替换为原始 U+FFFD 字符。
+func appendJSONString(dst []byte, s string) []byte {
+	dst = append(dst, '"')
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c < utf8.RuneSelf {
+			switch c {
+			case '"':
+				dst = append(dst, '\\', '"')
+			case '\\':
+				dst = append(dst, '\\', '\\')
+			case '\n':
+				dst = append(dst, '\\', 'n')
+			case '\r':
+				dst = append(dst, '\\', 'r')
+			case '\t':
+				dst = append(dst, '\\', 't')
+			case '\b':
+				dst = append(dst, '\\', 'b')
+			case '\f':
+				dst = append(dst, '\\', 'f')
+			default:
+				if c < 0x20 {
+					dst = append(dst, '\\', 'u', '0', '0', hexDigits[c>>4], hexDigits[c&0xF])
+				} else {
+					dst = append(dst, c)
+				}
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			dst = append(dst, "\uFFFD"...)
+			i++
+			continue
+		}
+		if r == '\u2028' || r == '\u2029' {
+			dst = append(dst, '\\', 'u', '2', '0', '2', hexDigits[byte(r)&0xF])
+			i += size
+			continue
+		}
+		dst = append(dst, s[i:i+size]...)
+		i += size
+	}
+	return append(dst, '"')
 }
 
 // locate 将字节偏移换算为 1 起始的行号与列号（列按字符计数）
@@ -213,7 +357,7 @@ func (a *App) AnalyzeJSON(jsonStr string) AnalyzeResult {
 		return AnalyzeResult{Valid: false, Message: "请输入JSON内容"}
 	}
 	data := []byte(jsonStr)
-	val, err := parseOrdered(data)
+	val, err := a.parseCached(jsonStr)
 	if err != nil {
 		// 注意：部分 Go 版本（如 1.25.x）中 Decoder.Token() 报告的 SyntaxError.Offset
 		// 是相对当前 token 的偏移，不可靠；用 json.Unmarshal 复核以获得准确的绝对字节偏移。
@@ -274,7 +418,7 @@ func (a *App) FormatJSON(jsonStr string) (string, error) {
 	if strings.TrimSpace(jsonStr) == "" {
 		return "", fmt.Errorf("请输入JSON内容")
 	}
-	val, err := parseOrdered([]byte(jsonStr))
+	val, err := a.parseCached(jsonStr)
 	if err != nil {
 		return "", fmt.Errorf("JSON格式错误: %v", err)
 	}
@@ -286,7 +430,7 @@ func (a *App) MinifyJSON(jsonStr string) (string, error) {
 	if strings.TrimSpace(jsonStr) == "" {
 		return "", fmt.Errorf("请输入JSON内容")
 	}
-	val, err := parseOrdered([]byte(jsonStr))
+	val, err := a.parseCached(jsonStr)
 	if err != nil {
 		return "", fmt.Errorf("JSON格式错误: %v", err)
 	}

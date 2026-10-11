@@ -41,6 +41,10 @@
           <option value="typescript">TypeScript</option>
           <option value="java">Java</option>
         </select>
+        <label v-if="codeLang === 'java'" class="chk" title="用 Lombok @Data 注解替代显式 getter/setter">
+          <input type="checkbox" v-model="javaLombok" />
+          Lombok @Data
+        </label>
         <button class="tbtn primary" :disabled="busy" @click="genCode">生成类型定义</button>
         <span class="tp-hint">自动推断结构体 / 接口 / 类</span>
       </template>
@@ -65,6 +69,7 @@ const active = ref('convert');
 const busy = ref(false);
 const path = ref('');
 const codeLang = ref('go');
+const javaLombok = ref(false);
 
 function api() {
   const a = window.go?.main?.App;
@@ -135,7 +140,8 @@ async function genCode() {
   }
   busy.value = true;
   try {
-    const out = await a.GenerateCode(props.input, codeLang.value);
+    const opts = codeLang.value === 'java' ? { javaLombok: javaLombok.value } : {};
+    const out = await a.GenerateCode(props.input, codeLang.value, opts);
     emit('result', {
       text: out,
       lang: codeLangMap[codeLang.value],
@@ -243,6 +249,18 @@ async function genCode() {
   color: var(--muted);
   user-select: none;
 }
+
+.chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.chk input { accent-color: var(--accent); cursor: pointer; }
 
 @media (max-width: 900px) {
   .tp-hint { display: none; }

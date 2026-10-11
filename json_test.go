@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -142,5 +145,230 @@ func TestValidateJSONBackwardCompatible(t *testing.T) {
 	ok, _ = app.ValidateJSON(`{`)
 	if ok {
 		t.Fatal("invalid case should return false")
+	}
+}
+
+// ---------- 单遍直写序列化器：与旧实现（Encoder + 每值 Encoder）行为对等 ----------
+
+// legacyObj/legacyEncode 忠实复刻优化前的序列化路径，用于对等性对比与基准。
+type legacyObj struct{ o *Obj }
+
+func (l legacyObj) MarshalJSON() ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, m := range l.o.Members {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		k, err := legacyMarshalNoEscape(m.Key)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(k)
+		b.WriteByte(':')
+		v, err := legacyMarshalNoEscape(m.Value)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(v)
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
+}
+
+func legacyMarshalNoEscape(v any) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(b.Bytes(), "\n"), nil
+}
+
+// legacyWrap 把解析树深转换为旧路径类型，使嵌套对象也走每值 Encoder
+func legacyWrap(v any) any {
+	switch t := v.(type) {
+	case *Obj:
+		members := make([]Member, len(t.Members))
+		for i, m := range t.Members {
+			members[i] = Member{Key: m.Key, Value: legacyWrap(m.Value)}
+		}
+		return legacyObj{o: &Obj{Members: members}}
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = legacyWrap(e)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func legacyEncode(v any, indent string) (string, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if indent != "" {
+		enc.SetIndent("", indent)
+	}
+	if err := enc.Encode(legacyWrap(v)); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+func TestEncodeParityWithLegacyPath(t *testing.T) {
+	docs := []string{
+		`{"a":"<html> & \"转义\"","b":"tab\there\nnl\u0001ctl","c":"line\u2028sep\u2029para"}`,
+		`{"嵌套":{"数组":[1,-2.5e3,true,null,"中文🎉"],"空对象":{},"空数组":[]}}`,
+		`"顶层字符串 <>&"`,
+		`12345678901234567890`,
+		`[]`,
+		`{}`,
+	}
+	for _, in := range docs {
+		val, err := parseOrdered([]byte(in))
+		if err != nil {
+			t.Fatalf("parse %s: %v", in, err)
+		}
+		for _, indent := range []string{"", "  "} {
+			got, err := encodeValue(val, indent)
+			if err != nil {
+				t.Fatalf("new encode %s: %v", in, err)
+			}
+			want, err := legacyEncode(val, indent)
+			if err != nil {
+				t.Fatalf("legacy encode %s: %v", in, err)
+			}
+			if got != want {
+				t.Fatalf("parity mismatch for %s (indent=%q):\n new=%q\nold=%q", in, indent, got, want)
+			}
+		}
+	}
+}
+
+func TestEncodeInvalidUTF8Parity(t *testing.T) {
+	// 非法 UTF-8 字节必须与旧路径一样替换为原始 U+FFFD 字符
+	val := &Obj{Members: []Member{{Key: "k\x00\xff", Value: "bad\xff\xfe尾"}}}
+	got, err := encodeValue(val, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := legacyEncode(val, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("invalid-UTF8 parity mismatch:\n new=%q\nold=%q", got, want)
+	}
+}
+
+// benchDoc 构造约 300KB 的混合结构文档
+func benchDoc(b *testing.B) any {
+	var sb strings.Builder
+	sb.WriteString(`{"items":[`)
+	for i := 0; i < 2000; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb,
+			`{"id":%d,"name":"项目 <item> %d 中文🎉","tags":["a%d","b%d","c%d"],`+
+				`"meta":{"active":%v,"score":%d.5,"note":null,"nested":{"deep":{"x":[1,2,3]}}}}`,
+			i, i, i, i, i, i%2 == 0, i)
+	}
+	sb.WriteString(`],"total":2000}`)
+	val, err := parseOrdered([]byte(sb.String()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	return val
+}
+
+func BenchmarkEncodeValue(b *testing.B) {
+	val := benchDoc(b)
+	b.ReportAllocs()
+	b.Run("new", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err := encodeValue(val, "  "); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("legacy", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err := legacyEncode(val, "  "); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func TestParseCache(t *testing.T) {
+	app := NewApp()
+	var sb strings.Builder
+	sb.WriteString(`{"items":[`)
+	for i := 0; i < 1500; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, `{"id":%d,"name":"item-%d","tags":["a","b"]}`, i, i)
+	}
+	sb.WriteString("]}")
+	big := sb.String()
+	if len(big) < parseCacheMinSize {
+		t.Fatalf("doc too small to exercise cache: %d bytes", len(big))
+	}
+
+	v1, err := app.parseCached(big)
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	v2, err := app.parseCached(big)
+	if err != nil {
+		t.Fatalf("second parse: %v", err)
+	}
+	if v1 != v2 {
+		t.Fatal("expected cache hit: same parse tree pointer for identical input")
+	}
+
+	// 小文档不缓存：每次都是新解析
+	small := `{"a":1}`
+	w1, err := app.parseCached(small)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2, err := app.parseCached(small)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w1 == w2 {
+		t.Fatal("docs below parseCacheMinSize must not be cached")
+	}
+
+	// 解析失败应使缓存失效，之后相同内容仍全新解析
+	if _, err := app.parseCached(big + " {}"); err == nil {
+		t.Fatal("expected parse error for corrupted input")
+	}
+	v3, err := app.parseCached(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v3 == v1 {
+		t.Fatal("cache must be invalidated after a failed parse")
+	}
+
+	// 上层 API 共享缓存：Analyze 之后 Format 不再重复解析，结果仍正确
+	res := app.AnalyzeJSON(big)
+	if !res.Valid {
+		t.Fatalf("analyze failed: %s", res.Message)
+	}
+	out, err := app.FormatJSON(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"items"`) || !strings.Contains(out, `"item-1499"`) {
+		t.Fatal("formatted output missing expected keys")
 	}
 }

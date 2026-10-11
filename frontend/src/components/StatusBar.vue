@@ -45,11 +45,13 @@ const stats = computed(() => props.result?.stats ?? null);
 
 const stateClass = computed(() => {
   if (!props.result || !props.input.trim()) return 'idle';
+  if (props.result.paused) return 'paused';
   return props.result.valid ? 'ok' : 'err';
 });
 const stateText = computed(() => {
   if (!props.input.trim()) return '就绪';
   if (!props.result) return '校验中…';
+  if (props.result.paused) return '文档较大，实时校验已暂停（点「校验」手动检查）';
   if (props.result.valid) return '合法 JSON';
   if (props.result.line) return `错误：第 ${props.result.line} 行第 ${props.result.col} 列`;
   return `错误：${props.result.message}`;
@@ -87,6 +89,8 @@ const stateText = computed(() => {
 .state.ok { color: var(--success); }
 .state.err .dot { background-color: var(--danger); }
 .state.err { color: var(--danger); }
+.state.paused .dot { background-color: var(--warning); }
+.state.paused { color: var(--warning); }
 
 .right {
   display: flex;

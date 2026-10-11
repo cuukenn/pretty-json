@@ -36,8 +36,29 @@ func (a *App) OpenJSONFile() (*FileData, error) {
 	return readFileData(path)
 }
 
-// readFileData 读取文件并去除 UTF-8 BOM
+// maxFileBytes 打开/拖入文件的大小上限，防止超大文件撑爆编辑器与桥接
+const maxFileBytes = 20 << 20 // 20 MB
+
+// formatSize 人类可读的文件大小
+func formatSize(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d B", n)
+}
+
+// readFileData 读取文件并去除 UTF-8 BOM；超过大小上限时返回错误
 func readFileData(path string) (*FileData, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取文件失败: %v", err)
+	}
+	if info.Size() > maxFileBytes {
+		return nil, fmt.Errorf("文件过大（%s），打开上限为 %d MB", formatSize(info.Size()), maxFileBytes>>20)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("读取文件失败: %v", err)

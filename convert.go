@@ -71,7 +71,7 @@ func (a *App) JSONToYAML(jsonStr string) (string, error) {
 	if strings.TrimSpace(jsonStr) == "" {
 		return "", fmt.Errorf("请输入JSON内容")
 	}
-	val, err := parseOrdered([]byte(jsonStr))
+	val, err := a.parseCached(jsonStr)
 	if err != nil {
 		return "", fmt.Errorf("JSON格式错误: %v", err)
 	}
@@ -229,7 +229,7 @@ func (a *App) JSONToTOML(jsonStr string) (string, error) {
 	if strings.TrimSpace(jsonStr) == "" {
 		return "", fmt.Errorf("请输入JSON内容")
 	}
-	val, err := parseOrdered([]byte(jsonStr))
+	val, err := a.parseCached(jsonStr)
 	if err != nil {
 		return "", fmt.Errorf("JSON格式错误: %v", err)
 	}

@@ -4,9 +4,11 @@ import {main} from '../models';
 
 export function AnalyzeJSON(arg1:string):Promise<main.AnalyzeResult>;
 
+export function BuildJSONTree(arg1:string):Promise<main.TreeNode>;
+
 export function FormatJSON(arg1:string):Promise<string>;
 
-export function GenerateCode(arg1:string,arg2:string):Promise<string>;
+export function GenerateCode(arg1:string,arg2:string,arg3:Record<string, any>):Promise<string>;
 
 export function JSONPathQuery(arg1:string,arg2:string):Promise<main.JSONPathResult>;
 

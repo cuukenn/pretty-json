@@ -4,6 +4,15 @@
   box-sizing: border-box;
 }
 
+/* 内嵌等宽字体（Google Fonts JetBrains Mono 可变字重 latin 子集，随 Wails 资源分发） */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('/fonts/JetBrainsMono.woff2') format('woff2');
+}
+
 html, body, #app {
   width: 100%;
   height: 100%;
@@ -22,6 +31,7 @@ html, body, #app {
   --danger: #ef4444;
   --danger-hover: #dc2626;
   --success: #10b981;
+  --warning: #d97706;
   --cm-active: rgba(125, 145, 175, 0.12);
   --cm-select: rgba(37, 99, 235, 0.18);
   --tok-key: #b91c1c;
@@ -45,6 +55,7 @@ html, body, #app {
   --danger: #f87171;
   --danger-hover: #ef4444;
   --success: #34d399;
+  --warning: #f59e0b;
   --cm-active: rgba(148, 180, 220, 0.08);
   --cm-select: rgba(59, 130, 246, 0.28);
   --tok-key: #f472b6;
