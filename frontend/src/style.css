@@ -4,10 +4,64 @@
   box-sizing: border-box;
 }
 
+html, body, #app {
+  width: 100%;
+  height: 100%;
+}
+
+/* ---------- 主题变量 ---------- */
+:root {
+  --bg: #f1f5f9;
+  --panel: #ffffff;
+  --panel-alt: #f8fafc;
+  --border: #e2e8f0;
+  --text: #1e293b;
+  --muted: #64748b;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --danger: #ef4444;
+  --danger-hover: #dc2626;
+  --success: #10b981;
+  --cm-active: rgba(125, 145, 175, 0.12);
+  --cm-select: rgba(37, 99, 235, 0.18);
+  --tok-key: #b91c1c;
+  --tok-string: #15803d;
+  --tok-number: #b45309;
+  --tok-bool: #7c3aed;
+  --tok-null: #64748b;
+  --tok-punct: #64748b;
+  --shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+}
+
+:root[data-theme="dark"] {
+  --bg: #0b1220;
+  --panel: #111a2c;
+  --panel-alt: #0e1626;
+  --border: #243044;
+  --text: #dbe4f0;
+  --muted: #8296b0;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --danger: #f87171;
+  --danger-hover: #ef4444;
+  --success: #34d399;
+  --cm-active: rgba(148, 180, 220, 0.08);
+  --cm-select: rgba(59, 130, 246, 0.28);
+  --tok-key: #f472b6;
+  --tok-string: #86efac;
+  --tok-number: #fbbf24;
+  --tok-bool: #c4b5fd;
+  --tok-null: #94a3b8;
+  --tok-punct: #94a3b8;
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
 body {
-  margin: 0;
-  padding: 0;
-  background-color: #f8fafc;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
+  overflow: hidden;
 }
 
 #app {

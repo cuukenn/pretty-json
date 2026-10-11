@@ -1,257 +1,423 @@
 <template>
   <div class="app-container">
-    <!-- 操作按钮栏 -->
-    <div class="toolbar">
-      <button @click="handleFormat" class="btn primary">格式化 JSON</button>
-      <button @click="handleMinify" class="btn primary">压缩 JSON</button>
-      <button @click="handleValidate" class="btn secondary">校验格式</button>
-      <button @click="handleCopy" class="btn secondary">复制结果</button>
-      <button @click="handleClear" class="btn danger">清空内容</button>
-      <span class="status" :class="{ error: statusType === 'error', success: statusType === 'success' }">
-        {{ statusText }}
-      </span>
-    </div>
+    <!-- 顶部工具栏 -->
+    <header class="toolbar">
+      <div class="brand">
+        <span class="logo">{}</span>
+        <span class="name">pretty-json</span>
+      </div>
 
-    <!-- 输入输出区域（响应式布局） -->
-    <div class="content">
-      <div class="panel">
-        <h3>输入 JSON</h3>
-        <textarea
-          v-model="inputValue"
-          class="input-area"
-          placeholder="请粘贴或输入 JSON 字符串..."
-          @input="handleInput"
-        ></textarea>
+      <div class="btn-group">
+        <button @click="handleFormat" class="btn primary" title="Ctrl+Enter">格式化</button>
+        <button @click="handleMinify" class="btn primary" title="Ctrl+Shift+M">压缩</button>
+        <button @click="handleValidate" class="btn secondary" title="Ctrl+Shift+K">校验</button>
       </div>
-      <div class="panel">
-        <h3>处理结果</h3>
-        <textarea
-          v-model="outputValue"
-          class="output-area"
-          placeholder="处理后的结果将显示在这里..."
-          readonly
-        ></textarea>
+      <div class="btn-divider"></div>
+      <div class="btn-group">
+        <button @click="handleCopy" class="btn secondary">复制结果</button>
+        <button @click="handleClear" class="btn danger">清空</button>
       </div>
-    </div>
+
+      <div class="spacer"></div>
+      <span class="shortcut-hint">Ctrl+Enter 格式化 · Ctrl+Shift+M 压缩 · Ctrl+Shift+K 校验</span>
+      <button @click="toggleTheme" class="btn icon" :title="theme === 'dark' ? '切换亮色主题' : '切换暗色主题'">
+        {{ theme === 'dark' ? '☀️' : '🌙' }}
+      </button>
+    </header>
+
+    <!-- 输入输出区域（可拖拽分隔） -->
+    <main class="content" ref="contentRef">
+      <section class="panel" :style="{ width: leftPct + '%' }">
+        <div class="panel-head">
+          <h3>输入 JSON</h3>
+          <span class="hint">实时校验 · 错误行列定位</span>
+        </div>
+        <JsonEditor ref="inputEditor" v-model="inputValue" />
+      </section>
+
+      <div class="splitter" @mousedown="startDrag" title="拖拽调整宽度">
+        <div class="splitter-bar"></div>
+      </div>
+
+      <section class="panel grow">
+        <div class="panel-head">
+          <h3>处理结果</h3>
+          <span class="hint">保留键顺序 · 大数字保精度</span>
+        </div>
+        <JsonEditor v-model="outputValue" :readonly="true" />
+      </section>
+    </main>
+
+    <!-- 状态栏 -->
+    <StatusBar :input="inputValue" :result="analyzeResult" />
+
+    <!-- Toast 通知 -->
+    <ToastHost :toasts="toasts" />
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import JsonEditor from './components/JsonEditor.vue';
+import StatusBar from './components/StatusBar.vue';
+import ToastHost from './components/ToastHost.vue';
 
-// 状态管理
-const inputValue = ref(''); // 输入框内容
-const outputValue = ref(''); // 输出框内容
-const statusText = ref(''); // 状态提示文本
-const statusType = ref(''); // 状态类型（success/error）
+// ---------- 状态 ----------
+const inputValue = ref('');
+const outputValue = ref('');
+const analyzeResult = ref(null); // AnalyzeResult：{ valid, message, line, col, stats }
+const inputEditor = ref(null);
 
-// 等待 Wails 初始化完成（确保能调用后端方法）
+// ---------- 主题 ----------
+const theme = ref('light');
+function applyTheme() {
+  document.documentElement.dataset.theme = theme.value;
+}
+function toggleTheme() {
+  theme.value = theme.value === 'dark' ? 'light' : 'dark';
+}
+watch(theme, (t) => {
+  localStorage.setItem('pj-theme', t);
+  applyTheme();
+});
+
+// ---------- Toast ----------
+let toastSeq = 0;
+const toasts = ref([]);
+function toast(text, type = 'info') {
+  const id = ++toastSeq;
+  toasts.value.push({ id, type, text });
+  setTimeout(() => {
+    toasts.value = toasts.value.filter((t) => t.id !== id);
+  }, 3000);
+}
+
+// ---------- 实时校验（300ms 防抖 + 竞态保护） ----------
+let analyzeTimer = null;
+let analyzeSeq = 0;
+
+function refreshAnalyze(immediate = false) {
+  if (analyzeTimer) clearTimeout(analyzeTimer);
+  const run = async () => {
+    if (!inputValue.value.trim()) {
+      analyzeResult.value = null;
+      inputEditor.value?.clearError();
+      return;
+    }
+    const seq = ++analyzeSeq;
+    try {
+      const r = await window.go.main.App.AnalyzeJSON(inputValue.value);
+      if (seq !== analyzeSeq) return; // 已有更新的请求，丢弃旧结果
+      analyzeResult.value = r;
+      if (r.valid) inputEditor.value?.clearError();
+      else inputEditor.value?.setError(r.line, r.col, r.message);
+    } catch {
+      /* Wails 未就绪时忽略 */
+    }
+  };
+  if (immediate) run();
+  else analyzeTimer = setTimeout(run, 300);
+}
+
+watch(inputValue, () => refreshAnalyze());
+
+// ---------- 操作 ----------
+async function handleFormat() {
+  if (!inputValue.value.trim()) {
+    toast('请输入JSON内容', 'error');
+    return;
+  }
+  try {
+    outputValue.value = await window.go.main.App.FormatJSON(inputValue.value);
+    toast('格式化成功 ✅', 'success');
+  } catch (err) {
+    toast(err?.message || String(err), 'error');
+  }
+}
+
+async function handleMinify() {
+  if (!inputValue.value.trim()) {
+    toast('请输入JSON内容', 'error');
+    return;
+  }
+  try {
+    outputValue.value = await window.go.main.App.MinifyJSON(inputValue.value);
+    toast('压缩成功 ✅', 'success');
+  } catch (err) {
+    toast(err?.message || String(err), 'error');
+  }
+}
+
+async function handleValidate() {
+  try {
+    const r = await window.go.main.App.AnalyzeJSON(inputValue.value);
+    analyzeResult.value = r;
+    if (r.valid) {
+      inputEditor.value?.clearError();
+      toast('JSON格式正确 ✅', 'success');
+    } else {
+      inputEditor.value?.setError(r.line, r.col, r.message);
+      toast(r.message, 'error');
+    }
+  } catch (err) {
+    toast(err?.message || String(err), 'error');
+  }
+}
+
+function handleCopy() {
+  if (!outputValue.value.trim()) {
+    toast('无内容可复制', 'error');
+    return;
+  }
+  navigator.clipboard
+    .writeText(outputValue.value)
+    .then(() => toast('复制成功 ✅', 'success'))
+    .catch(() => toast('复制失败', 'error'));
+}
+
+function handleClear() {
+  inputValue.value = '';
+  outputValue.value = '';
+  analyzeResult.value = null;
+  inputEditor.value?.clearError();
+  toast('已清空', 'success');
+}
+
+// ---------- 分隔条拖拽 ----------
+const contentRef = ref(null);
+const leftPct = ref(50);
+
+function startDrag() {
+  const onMove = (ev) => {
+    if (!contentRef.value) return;
+    const rect = contentRef.value.getBoundingClientRect();
+    let pct = ((ev.clientX - rect.left) / rect.width) * 100;
+    pct = Math.min(80, Math.max(20, pct));
+    leftPct.value = pct;
+  };
+  const onUp = () => {
+    document.body.style.userSelect = '';
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+  document.body.style.userSelect = 'none';
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+}
+
+// ---------- 快捷键 ----------
+function onKeydown(e) {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const k = e.key.toLowerCase();
+  if (k === 'enter') {
+    e.preventDefault();
+    handleFormat();
+  } else if (e.shiftKey && k === 'm') {
+    e.preventDefault();
+    handleMinify();
+  } else if (e.shiftKey && k === 'k') {
+    e.preventDefault();
+    handleValidate();
+  }
+}
+
+// ---------- 生命周期 ----------
 onMounted(() => {
+  const saved = localStorage.getItem('pj-theme');
+  theme.value = saved || (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  applyTheme();
+  window.addEventListener('keydown', onKeydown);
   window.addEventListener('wails:ready', () => {
-    showStatus('就绪 ✅', 'success');
+    toast('就绪 ✅', 'success');
+    refreshAnalyze(true);
   });
 });
 
-// 显示状态提示（3秒后自动清除）
-const showStatus = (text, type = 'info') => {
-  statusText.value = text;
-  statusType.value = type;
-  setTimeout(() => {
-    statusText.value = '';
-    statusType.value = '';
-  }, 3000);
-};
-
-// 格式化 JSON
-const handleFormat = async () => {
-  try {
-    // 调用后端 FormatJSON 方法（Wails 绑定的 Go 函数）
-    const result = await window.go.main.App.FormatJSON(inputValue.value);
-    outputValue.value = result;
-    showStatus('格式化成功 ✅', 'success');
-  } catch (err) {
-    showStatus(err.message, 'error');
-  }
-};
-
-// 压缩 JSON
-const handleMinify = async () => {
-  try {
-    const result = await window.go.main.App.MinifyJSON(inputValue.value);
-    outputValue.value = result;
-    showStatus('压缩成功 ✅', 'success');
-  } catch (err) {
-    showStatus(err.message, 'error');
-  }
-};
-
-// 校验 JSON 格式
-const handleValidate = async () => {
-  const [isValid, msg] = await window.go.main.App.ValidateJSON(inputValue.value);
-  showStatus(msg, isValid ? 'success' : 'error');
-};
-
-// 复制结果到剪贴板（使用浏览器原生 API）
-const handleCopy = () => {
-  if (!outputValue.value.trim()) {
-    showStatus('无内容可复制', 'error');
-    return;
-  }
-  navigator.clipboard.writeText(outputValue.value).then(() => {
-    showStatus('复制成功 ✅', 'success');
-  }).catch(() => {
-    showStatus('复制失败', 'error');
-  });
-};
-
-// 清空输入输出
-const handleClear = () => {
-  inputValue.value = '';
-  outputValue.value = '';
-  showStatus('已清空', 'success');
-};
-
-// 输入时自动校验（可选优化）
-const handleInput = () => {
-  if (inputValue.value.trim()) {
-    window.go.main.App.ValidateJSON(inputValue.value).then(([isValid, msg]) => {
-      statusText.value = msg;
-      statusType.value = isValid ? 'success' : 'error';
-    });
-  } else {
-    statusText.value = '';
-    statusType.value = '';
-  }
-};
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown);
+  if (analyzeTimer) clearTimeout(analyzeTimer);
+});
 </script>
 
 <style scoped>
-/* 全局容器 */
 .app-container {
-  width: 100vw;
-  height: 100vh;
-  padding: 16px;
-  box-sizing: border-box;
-  font-family: "Microsoft YaHei", Arial, sans-serif;
-}
-
-/* 操作栏 */
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-
-/* 按钮样式 */
-.btn {
-  padding: 10px 18px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 14px;
-  transition: all 0.2s ease;
-}
-
-.btn.primary {
-  background-color: #2563eb;
-  color: white;
-}
-
-.btn.primary:hover {
-  background-color: #1d4ed8;
-}
-
-.btn.secondary {
-  background-color: #64748b;
-  color: white;
-}
-
-.btn.secondary:hover {
-  background-color: #475569;
-}
-
-.btn.danger {
-  background-color: #ef4444;
-  color: white;
-}
-
-.btn.danger:hover {
-  background-color: #dc2626;
-}
-
-/* 状态提示 */
-.status {
-  margin-left: auto;
-  font-size: 14px;
-  padding: 8px 12px;
-  border-radius: 4px;
-}
-
-.status.success {
-  color: #10b981;
-  background-color: #ecfdf5;
-}
-
-.status.error {
-  color: #ef4444;
-  background-color: #fef2f2;
-}
-
-/* 输入输出区域 */
-.content {
-  display: flex;
-  gap: 16px;
-  height: calc(100vh - 70px);
-  flex-wrap: wrap;
-}
-
-.panel {
-  flex: 1;
-  min-width: 300px;
   display: flex;
   flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  background-color: var(--bg);
+}
+
+/* ---------- 工具栏 ---------- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background-color: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 10px;
+  user-select: none;
+}
+
+.brand .logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  color: #fff;
+  font-weight: 700;
+  font-size: 15px;
+  font-family: Consolas, monospace;
+}
+
+.brand .name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.btn-group {
+  display: flex;
   gap: 8px;
 }
 
-.panel h3 {
-  font-size: 16px;
-  color: #334155;
+.btn-divider {
+  width: 1px;
+  height: 22px;
+  background-color: var(--border);
+  margin: 0 4px;
+}
+
+.btn {
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+
+.btn.primary {
+  background-color: var(--accent);
+  color: #fff;
+}
+.btn.primary:hover { background-color: var(--accent-hover); }
+
+.btn.secondary {
+  background-color: var(--panel-alt);
+  color: var(--text);
+  border-color: var(--border);
+}
+.btn.secondary:hover { background-color: var(--border); }
+
+.btn.danger {
+  background-color: transparent;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.btn.danger:hover { background-color: var(--danger); color: #fff; }
+
+.btn.icon {
+  background-color: var(--panel-alt);
+  border-color: var(--border);
+  font-size: 15px;
+  padding: 6px 12px;
+}
+
+.spacer { flex: 1; }
+
+.shortcut-hint {
+  font-size: 12px;
+  color: var(--muted);
+  user-select: none;
+}
+
+/* ---------- 主内容区 ---------- */
+.content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+  gap: 0;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 240px;
+  min-height: 0;
+}
+
+.panel.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.panel-head h3 {
+  font-size: 14px;
+  color: var(--text);
   font-weight: 600;
 }
 
-/* 文本域样式 */
-.input-area, .output-area {
-  flex: 1;
-  padding: 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  resize: none;
-  font-size: 14px;
-  line-height: 1.6;
-  box-sizing: border-box;
+.panel-head .hint {
+  font-size: 12px;
+  color: var(--muted);
 }
 
-.input-area {
-  background-color: white;
+.splitter {
+  width: 14px;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: col-resize;
+  flex-shrink: 0;
 }
 
-.output-area {
-  background-color: #f8fafc;
-  color: #1e293b;
+.splitter-bar {
+  width: 4px;
+  height: 48px;
+  border-radius: 2px;
+  background-color: var(--border);
+  transition: background-color 0.15s ease;
 }
 
-/* 响应式适配（移动端垂直布局） */
+.splitter:hover .splitter-bar {
+  background-color: var(--accent);
+}
+
 @media (max-width: 768px) {
   .content {
     flex-direction: column;
-    height: auto;
-    min-height: calc(100vh - 70px);
   }
-
   .panel {
-    height: 45vh;
+    width: 100% !important;
+    flex: 1;
+  }
+  .splitter {
+    display: none;
+  }
+  .shortcut-hint {
+    display: none;
   }
 }
 </style>
